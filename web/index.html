@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>同频 · 小队协作板</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></symbol>
+    <symbol id="i-board" viewBox="0 0 24 24"><rect x="3" y="4" width="5.4" height="16" rx="1.8"/><rect x="9.3" y="4" width="5.4" height="11" rx="1.8"/><rect x="15.6" y="4" width="5.4" height="14" rx="1.8"/></symbol>
+    <symbol id="i-gantt" viewBox="0 0 24 24"><path d="M4 6h5M7 10.5h6M10 15h6M13 19.5h5"/><circle cx="4" cy="6" r="1.2" fill="currentColor" stroke="none"/><circle cx="7" cy="10.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="10" cy="15" r="1.2" fill="currentColor" stroke="none"/><circle cx="13" cy="19.5" r="1.2" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-req" viewBox="0 0 24 24"><path d="M4 6.5h10M4 12h10M4 17.5h7"/><path d="M17.5 11.5v7.2M14 15.2h7"/></symbol>
+    <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2.2-5 4 10 2.3-5H21"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.3" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.2A8 8 0 0 1 9.8 4 8.1 8.1 0 1 0 20 14.2Z"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9 7V4.8h6V7M7 7l.8 12h8.4L17 7M10 10.5v5M14 10.5v5"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-comment" viewBox="0 0 24 24"><path d="M20 12a7.5 7.5 0 0 1-8 7.5c-1 0-2-.2-2.9-.6L5 20l1.2-3.6A7.5 7.5 0 1 1 20 12Z"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4 21 20H3L12 4Z"/><path d="M12 10v4.5"/><circle cx="12" cy="17.4" r="1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+    <symbol id="i-user-plus" viewBox="0 0 24 24"><circle cx="10" cy="8" r="3.6"/><path d="M3.5 20c.6-3.4 3.2-5.4 6.5-5.4 2 0 3.7.7 4.9 2"/><path d="M18 13v6M15 16h6"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l2.4-2.4a4 4 0 1 0-5.7-5.6L11 7.4"/><path d="M14 10a4 4 0 0 0-5.7 0l-2.4 2.4a4 4 0 1 0 5.7 5.6L13 16.6"/></symbol>
+  </svg>
+
+  <div class="app">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="同频首页">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+        <span class="brand-text"><strong>同频</strong><small>小队协作板</small></span>
+      </a>
+      <nav class="nav" id="nav" aria-label="主导航">
+        <button type="button" class="nav-item" data-view="overview">
+          <svg class="icon"><use href="#i-overview"/></svg><span>概览</span>
+        </button>
+        <button type="button" class="nav-item" data-view="board">
+          <svg class="icon"><use href="#i-board"/></svg><span>看板</span>
+        </button>
+        <button type="button" class="nav-item" data-view="gantt">
+          <svg class="icon"><use href="#i-gantt"/></svg><span>甘特</span>
+        </button>
+        <button type="button" class="nav-item" data-view="requirements">
+          <svg class="icon"><use href="#i-req"/></svg><span>需求</span>
+        </button>
+        <button type="button" class="nav-item" data-view="activity">
+          <svg class="icon"><use href="#i-pulse"/></svg><span>动态</span>
+        </button>
+      </nav>
+      <div class="sidebar-note">
+        <p>五六个⼈，<br>把事对齐就够了。</p>
+        <div class="sidebar-tools">
+          <button type="button" id="export-btn" class="link-btn"><svg class="icon"><use href="#i-download"/></svg>导出数据</button>
+          <button type="button" id="theme-btn" class="icon-btn" title="切换明暗" aria-label="切换明暗"><svg class="icon"><use href="#i-moon"/></svg></button>
+        </div>
+      </div>
+      <button type="button" class="sidebar-user" id="sidebar-user" aria-label="切换当前身份"></button>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1 id="page-title">概览</h1>
+          <p id="page-sub"></p>
+        </div>
+        <div class="topbar-tools">
+          <button type="button" class="project-btn" id="project-btn" aria-haspopup="menu" aria-label="切换项目">
+            <span class="project-dot" id="project-dot"></span>
+            <span class="pname" id="project-name">项目</span>
+            <svg class="icon"><use href="#i-chevron"/></svg>
+          </button>
+          <label class="search">
+            <svg class="icon"><use href="#i-search"/></svg>
+            <input id="search-input" type="search" placeholder="搜索任务、需求…" autocomplete="off" spellcheck="false">
+          </label>
+          <div class="avatars" id="avatars"></div>
+          <button type="button" class="icon-btn identity-btn" id="identity-btn" title="切换身份" aria-label="切换身份">
+            <svg class="icon"><use href="#i-user-plus"/></svg>
+          </button>
+          <button type="button" class="btn btn-primary" id="new-task-btn">
+            <svg class="icon"><use href="#i-plus"/></svg><span>新建任务</span>
+          </button>
+        </div>
+      </header>
+      <section class="view" id="view" aria-live="polite"></section>
+    </main>
+  </div>
+
+  <div id="drawer-root"></div>
+  <div id="modal-root"></div>
+  <div id="menu-root"></div>
+  <div id="toast-root" role="status" aria-live="polite"></div>
+
+  <noscript><p class="noscript">同频需要启用 JavaScript 才能使用。</p></noscript>
+  <script src="/app.js"></script>
+</body>
+</html>
