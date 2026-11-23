@@ -141,6 +141,7 @@ def init_db() -> None:
                 priority       TEXT NOT NULL DEFAULT 'P2',
                 assignee_id    INTEGER REFERENCES members(id) ON DELETE SET NULL,
                 requirement_id INTEGER REFERENCES requirements(id) ON DELETE SET NULL,
+                parent_id      INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
                 start_date     TEXT,
                 due_date       TEXT,
                 position       INTEGER NOT NULL DEFAULT 0,
@@ -169,6 +170,7 @@ def init_db() -> None:
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id, status, position);
+            CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
             CREATE INDEX IF NOT EXISTS idx_req_project ON requirements(project_id);
             """
         )
@@ -218,6 +220,11 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
             )
         if "start_date" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN start_date TEXT")
+        if table == "tasks" and "parent_id" not in cols:
+            conn.execute(
+                "ALTER TABLE tasks ADD COLUMN parent_id INTEGER"
+                " REFERENCES tasks(id) ON DELETE CASCADE"
+            )
 
     orphan = conn.execute(
         "SELECT 1 FROM requirements WHERE project_id IS NULL"
@@ -277,7 +284,7 @@ def entity_title(conn: sqlite3.Connection, entity_type: str, entity_id: int) -> 
 TASK_QUERY = """
 SELECT
     t.id, t.project_id, t.title, t.description, t.status, t.priority, t.assignee_id,
-    t.requirement_id, t.start_date, t.due_date, t.position, t.created_at, t.updated_at, t.done_at,
+    t.requirement_id, t.parent_id, t.start_date, t.due_date, t.position, t.created_at, t.updated_at, t.done_at,
     (SELECT COUNT(*) FROM entries e
        WHERE e.entity_type = 'task' AND e.entity_id = t.id AND e.kind <> 'system') AS entry_count,
     (SELECT e.kind FROM entries e
@@ -435,6 +442,52 @@ def same_project_requirement(conn: sqlite3.Connection, project_id: int, requirem
         raise ApiError(400, "关联的需求不存在")
     if row["project_id"] != project_id:
         raise ApiError(400, "这个需求属于另一个项目")
+
+
+def descendant_task_ids(conn: sqlite3.Connection, task_id: int) -> list[int]:
+    rows = conn.execute(
+        """
+        WITH RECURSIVE sub(id) AS (
+            SELECT id FROM tasks WHERE parent_id = ?
+            UNION ALL
+            SELECT t.id FROM tasks t JOIN sub ON t.parent_id = sub.id
+        )
+        SELECT id FROM sub
+        """,
+        (task_id,),
+    ).fetchall()
+    return [int(r["id"]) for r in rows]
+
+
+def ensure_parent_task(
+    conn: sqlite3.Connection,
+    parent_id: int,
+    project_id: int,
+    task_id: int | None = None,
+) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT id, project_id, requirement_id, parent_id FROM tasks WHERE id = ?",
+        (parent_id,),
+    ).fetchone()
+    if not row:
+        raise ApiError(400, "上级任务不存在")
+    if row["project_id"] != project_id:
+        raise ApiError(400, "上级任务属于另一个项目")
+    if task_id is not None:
+        if int(parent_id) == int(task_id):
+            raise ApiError(400, "任务不能挂到自己下面")
+        cursor = row["parent_id"]
+        seen: set[int] = set()
+        while cursor:
+            cursor = int(cursor)
+            if cursor == task_id:
+                raise ApiError(400, "不能把任务挂到自己的子任务下")
+            if cursor in seen:
+                break
+            seen.add(cursor)
+            up = conn.execute("SELECT parent_id FROM tasks WHERE id = ?", (cursor,)).fetchone()
+            cursor = up["parent_id"] if up else None
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -655,11 +708,18 @@ def create_task(conn: sqlite3.Connection, body: dict) -> dict:
     priority = clean_enum(body.get("priority"), "优先级", PRIORITIES, "P2")
     assignee_id = clean_id(body.get("assignee_id"), "负责人")
     requirement_id = clean_id(body.get("requirement_id"), "关联需求")
+    parent_id = clean_id(body.get("parent_id"), "上级任务")
     start_date = clean_date(body.get("start_date"), "开始日期")
     due_date = clean_date(body.get("due_date"), "截止日期")
     check_date_order(start_date, due_date)
     ensure_member(conn, assignee_id)
     ensure_requirement(conn, requirement_id)
+    if parent_id is not None:
+        parent = ensure_parent_task(conn, parent_id, project_id)
+        parent_req = parent["requirement_id"]
+        if requirement_id is not None and requirement_id != parent_req:
+            raise ApiError(400, "子任务的需求要和上级任务一致")
+        requirement_id = parent_req
     same_project_requirement(conn, project_id, requirement_id)
     max_pos = conn.execute(
         "SELECT COALESCE(MAX(position), -1) AS p FROM tasks WHERE project_id = ? AND status = ?",
@@ -668,11 +728,11 @@ def create_task(conn: sqlite3.Connection, body: dict) -> dict:
     stamp = now_iso()
     cur = conn.execute(
         "INSERT INTO tasks(project_id, title, description, status, priority, assignee_id, requirement_id,"
-        " start_date, due_date, position, created_at, updated_at, done_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " parent_id, start_date, due_date, position, created_at, updated_at, done_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             project_id, title, description, status, priority, assignee_id, requirement_id,
-            start_date, due_date, max_pos + 1, stamp, stamp, stamp if status == "done" else None,
+            parent_id, start_date, due_date, max_pos + 1, stamp, stamp, stamp if status == "done" else None,
         ),
     )
     bump_rev(conn)
@@ -702,6 +762,8 @@ def update_task(conn: sqlite3.Connection, task_id: int, body: dict) -> dict:
         changes["requirement_id"] = clean_id(body.get("requirement_id"), "关联需求")
         ensure_requirement(conn, changes["requirement_id"])
         same_project_requirement(conn, row["project_id"], changes["requirement_id"])
+    if "parent_id" in body:
+        changes["parent_id"] = clean_id(body.get("parent_id"), "上级任务")
     if "start_date" in body:
         changes["start_date"] = clean_date(body.get("start_date"), "开始日期")
     if "due_date" in body:
@@ -713,6 +775,29 @@ def update_task(conn: sqlite3.Connection, task_id: int, body: dict) -> dict:
 
     if not changes:
         return read_state(conn)
+
+    # 子任务始终跟随上级任务的需求；改上级或改需求时同步整棵子树
+    parent_specified = "parent_id" in changes
+    if parent_specified and changes["parent_id"] is not None:
+        parent = ensure_parent_task(conn, changes["parent_id"], row["project_id"], task_id)
+        parent_req = parent["requirement_id"]
+        if "requirement_id" in changes and changes["requirement_id"] != parent_req:
+            raise ApiError(400, "子任务的需求要和上级任务一致")
+        changes["requirement_id"] = parent_req
+    elif not parent_specified and "requirement_id" in changes and row["parent_id"]:
+        parent = ensure_parent_task(conn, row["parent_id"], row["project_id"], task_id)
+        if changes["requirement_id"] != parent["requirement_id"]:
+            raise ApiError(400, "子任务的需求要跟随上级任务")
+
+    final_req = changes.get("requirement_id", row["requirement_id"])
+    if final_req != row["requirement_id"]:
+        child_ids = descendant_task_ids(conn, task_id)
+        if child_ids:
+            marks = ",".join("?" for _ in child_ids)
+            conn.execute(
+                f"UPDATE tasks SET requirement_id = ? WHERE id IN ({marks})",
+                (final_req, *child_ids),
+            )
 
     title = changes.get("title", row["title"])
     new_status = changes.get("status", row["status"])
@@ -746,6 +831,12 @@ def update_task(conn: sqlite3.Connection, task_id: int, body: dict) -> dict:
             add_entry(conn, "task", task_id, "system", f"把「{title}」关联到需求「{req_title}」", actor)
         else:
             add_entry(conn, "task", task_id, "system", f"取消了「{title}」的需求关联", actor)
+    if "parent_id" in changes and changes["parent_id"] != row["parent_id"]:
+        if changes["parent_id"]:
+            parent_title = entity_title(conn, "task", changes["parent_id"])
+            add_entry(conn, "task", task_id, "system", f"把「{title}」移到「{parent_title}」下面", actor)
+        else:
+            add_entry(conn, "task", task_id, "system", f"把「{title}」移到顶层", actor)
 
     sets = ", ".join(f"{key} = ?" for key in changes)
     values = list(changes.values())
@@ -760,7 +851,9 @@ def update_task(conn: sqlite3.Connection, task_id: int, body: dict) -> dict:
 def delete_task(conn: sqlite3.Connection, task_id: int) -> dict:
     if not conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone():
         raise ApiError(404, "任务不存在")
-    conn.execute("DELETE FROM entries WHERE entity_type = 'task' AND entity_id = ?", (task_id,))
+    ids = [task_id, *descendant_task_ids(conn, task_id)]
+    marks = ",".join("?" for _ in ids)
+    conn.execute(f"DELETE FROM entries WHERE entity_type = 'task' AND entity_id IN ({marks})", ids)
     conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     bump_rev(conn)
     return read_state(conn)
@@ -945,38 +1038,43 @@ def seed_demo(conn: sqlite3.Connection) -> None:
         ).lastrowid)
 
     tasks = [
-        # key, title, req, status, assignee, priority, start, due, position, created, done
-        ("members", "成员名单与颜色标识", 0, "done", 1, "P1", -12, -2, 0, 220, 30),
-        ("identity", "首次进入的身份选择", 0, "review", 2, "P1", -6, 1, 0, 210, None),
-        ("member-ui", "成员管理弹层", 0, "todo", 2, "P2", -2, 4, 0, 150, None),
-        ("board", "四列看板与卡片信息", 1, "done", 2, "P0", -10, -3, 1, 190, 52),
-        ("drag", "卡片拖拽与跨列排序", 1, "doing", 2, "P0", -5, 1, 0, 170, None),
-        ("drawer", "任务详情抽屉", 1, "doing", 1, "P1", -6, 2, 1, 160, None),
-        ("signals", "逾期与阻塞标记", 1, "todo", 3, "P1", 0, 3, 1, 140, None),
-        ("req-status", "需求状态与负责人", 2, "done", 0, "P1", -11, -4, 2, 170, 76),
-        ("progress", "关联任务完成度", 2, "doing", 0, "P1", -4, 2, 2, 120, None),
-        ("timeline", "决策记录时间线", 2, "review", 1, "P1", -3, 0, 1, 110, None),
-        ("review-notes", "整理本周评审问题", None, "todo", 0, "P2", -2, -1, 2, 40, None),
-        ("weekly-rule", "周报汇总口径", 3, "todo", 3, "P2", 1, 5, 0, 90, None),
-        ("weekly-copy", "一键复制 Markdown", 3, "todo", 3, "P2", 2, 7, 1, 80, None),
-        ("mobile", "手机端抽屉适配", 4, "todo", 4, "P2", 3, 9, 2, 70, None),
-        ("metrics-dict", "埋点事件字典", 5, "doing", 4, "P1", -4, 3, 0, 65, None),
-        ("metric-cards", "首屏指标卡", 5, "todo", 3, "P1", 0, 6, 3, 55, None),
-        ("export-share", "导出与分享", 5, "todo", 1, "P2", 2, 10, 4, 45, None),
+        # key, title, req, status, assignee, priority, start, due, position, created, done, parent
+        ("members", "成员名单与颜色标识", 0, "done", 1, "P1", -12, -2, 0, 220, 30, None),
+        ("identity", "首次进入的身份选择", 0, "review", 2, "P1", -6, 1, 0, 210, None, None),
+        ("member-ui", "成员管理弹层", 0, "todo", 2, "P2", -2, 4, 0, 150, None, None),
+        ("board", "四列看板与卡片信息", 1, "done", 2, "P0", -10, -3, 1, 190, 52, None),
+        ("drag", "卡片拖拽与跨列排序", 1, "doing", 2, "P0", -5, 1, 0, 170, None, None),
+        ("drag-highlight", "拖拽落点高亮", 1, "todo", 2, "P2", 0, 3, 2, 45, None, "drag"),
+        ("drawer", "任务详情抽屉", 1, "doing", 1, "P1", -6, 2, 1, 160, None, None),
+        ("signals", "逾期与阻塞标记", 1, "todo", 3, "P1", 0, 3, 1, 140, None, None),
+        ("req-status", "需求状态与负责人", 2, "done", 0, "P1", -11, -4, 2, 170, 76, None),
+        ("progress", "关联任务完成度", 2, "doing", 0, "P1", -4, 2, 2, 120, None, None),
+        ("timeline", "决策记录时间线", 2, "review", 1, "P1", -3, 0, 1, 110, None, None),
+        ("review-notes", "整理本周评审问题", None, "todo", 0, "P2", -2, -1, 2, 40, None, None),
+        ("weekly-rule", "周报汇总口径", 3, "todo", 3, "P2", 1, 5, 0, 90, None, None),
+        ("weekly-copy", "一键复制 Markdown", 3, "todo", 3, "P2", 2, 7, 1, 80, None, None),
+        ("mobile", "手机端抽屉适配", 4, "todo", 4, "P2", 3, 9, 2, 70, None, None),
+        ("metrics-dict", "埋点事件字典", 5, "doing", 4, "P1", -4, 3, 0, 65, None, None),
+        ("event-naming", "事件命名规范", 5, "todo", 4, "P1", -1, 4, 1, 60, None, "metrics-dict"),
+        ("event-pageview", "页面浏览事件口径", 5, "todo", 2, "P2", 0, 5, 0, 55, None, "event-naming"),
+        ("field-list", "上报字段清单", 5, "todo", 3, "P2", 1, 6, 2, 50, None, "metrics-dict"),
+        ("metric-cards", "首屏指标卡", 5, "todo", 3, "P1", 0, 6, 3, 55, None, None),
+        ("export-share", "导出与分享", 5, "todo", 1, "P2", 2, 10, 4, 45, None, None),
     ]
     task_ids: dict[str, int] = {}
     task_meta: dict[str, dict] = {}
-    for key, title, req_i, status, assignee, priority, start_off, due_off, pos, created, done_h in tasks:
+    for key, title, req_i, status, assignee, priority, start_off, due_off, pos, created, done_h, parent_key in tasks:
         stamp = ago(created)
         done_at = ago(done_h) if done_h else None
         project_id = project_ids[reqs[req_i]["project"]] if req_i is not None else project_ids[0]
         tid = conn.execute(
             "INSERT INTO tasks(project_id, title, description, status, priority, assignee_id,"
-            " requirement_id, start_date, due_date, position, created_at, updated_at, done_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " requirement_id, parent_id, start_date, due_date, position, created_at, updated_at, done_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id, title, "", status, priority, member_ids[assignee],
                 req_ids[req_i] if req_i is not None else None,
+                task_ids.get(parent_key) if parent_key else None,
                 day(start_off), day(due_off), pos, stamp, stamp, done_at,
             ),
         ).lastrowid
@@ -1085,7 +1183,7 @@ def seed_demo(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Tongpin/1.2"
+    server_version = "Tongpin/1.3"
     protocol_version = "HTTP/1.1"
 
     # -- 输出 --------------------------------------------------------------

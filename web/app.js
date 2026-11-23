@@ -41,8 +41,9 @@
   const VIEW_META = {
     overview: ["概览", "只看今天该推进的事"],
     board: ["看板", "拖动卡片更新状态"],
-    gantt: ["甘特图", "按时间看整体排期"],
     requirements: ["需求", "对齐我们到底在做什么"],
+    wbs: ["工作分解", "把交付物拆到可执行的工作包"],
+    gantt: ["甘特图", "按时间看整体排期"],
     activity: ["动态", "团队最近发生了什么"],
   };
 
@@ -60,6 +61,9 @@
     reqById: new Map(),
     taskById: new Map(),
     tasksByReq: new Map(),
+    childrenByTask: new Map(),
+    wbsCollapsed: new Set(),
+    wbsAdd: null,
     drawer: null,
     drawerEntries: null,
     drawerReady: false,
@@ -172,10 +176,67 @@
     return state.tasksByReq.get(Number(reqId)) || [];
   }
 
+  function childrenOf(taskId) {
+    return state.childrenByTask.get(Number(taskId)) || [];
+  }
+
+  function taskLeaves(t) {
+    const kids = childrenOf(t.id);
+    if (!kids.length) return [t];
+    return kids.flatMap((child) => taskLeaves(child));
+  }
+
+  function taskRollup(t) {
+    const leaves = taskLeaves(t);
+    const done = leaves.filter((leaf) => leaf.status === "done").length;
+    return {
+      done,
+      total: leaves.length,
+      pct: leaves.length ? Math.round((done / leaves.length) * 100) : 0,
+    };
+  }
+
+  function taskDepth(t) {
+    let depth = 0;
+    let cur = t;
+    const seen = new Set();
+    while (cur && cur.parent_id && depth < 20) {
+      if (seen.has(cur.parent_id)) break;
+      seen.add(cur.parent_id);
+      cur = state.taskById.get(cur.parent_id);
+      depth += 1;
+    }
+    return depth;
+  }
+
+  function descendantIds(taskId) {
+    const out = [];
+    const walk = (id) => {
+      for (const child of childrenOf(id)) {
+        out.push(child.id);
+        walk(child.id);
+      }
+    };
+    walk(taskId);
+    return out;
+  }
+
+  function descendantCount(taskId) {
+    return descendantIds(taskId).length;
+  }
+
+  function rootTasksOf(reqId) {
+    return reqTasks(reqId).filter((t) => !t.parent_id || !state.taskById.has(t.parent_id));
+  }
+
   function reqProgress(reqId) {
-    const list = reqTasks(reqId);
-    const done = list.filter((t) => t.status === "done").length;
-    return { total: list.length, done, pct: list.length ? Math.round((done / list.length) * 100) : 0 };
+    const leaves = reqTasks(reqId).flatMap((t) => (t.parent_id ? [] : taskLeaves(t)));
+    const done = leaves.filter((t) => t.status === "done").length;
+    return {
+      total: leaves.length,
+      done,
+      pct: leaves.length ? Math.round((done / leaves.length) * 100) : 0,
+    };
   }
 
   function reqRank(req) {
@@ -335,6 +396,15 @@
     }
     state.tasksByReq = byReq;
 
+    const byParent = new Map();
+    for (const t of data.tasks) {
+      if (!t.parent_id) continue;
+      if (!byParent.has(t.parent_id)) byParent.set(t.parent_id, []);
+      byParent.get(t.parent_id).push(t);
+    }
+    for (const list of byParent.values()) list.sort((a, b) => (a.position - b.position) || (a.id - b.id));
+    state.childrenByTask = byParent;
+
     if (state.identity && !state.memberById.has(state.identity)) {
       state.identity = null;
       localStorage.removeItem(IDENTITY_KEY);
@@ -417,6 +487,9 @@
       case "requirements":
         viewEl.innerHTML = renderRequirements();
         break;
+      case "wbs":
+        viewEl.innerHTML = renderWbs();
+        break;
       case "activity":
         viewEl.innerHTML = renderActivity();
         break;
@@ -428,6 +501,11 @@
     if (newBoard) newBoard.scrollLeft = scrollLeft;
     const newGantt = viewEl.querySelector(".gantt-scroll");
     if (newGantt) newGantt.scrollLeft = ganttLeft;
+
+    if (state.view === "wbs" && state.wbsAdd) {
+      const input = viewEl.querySelector("[data-wbs-input]");
+      if (input) input.focus();
+    }
 
     renderDrawer();
     syncScrollLock();
@@ -449,6 +527,11 @@
         const linked = tasks.filter((t) => t.requirement_id).length;
         const pct = total ? Math.round((linked / total) * 100) : 0;
         return `${projectRequirements().length} 个需求 · ${pct}% 的任务已挂到需求`;
+      }
+      case "wbs": {
+        const leaves = tasks.filter((t) => !childrenOf(t.id).length);
+        const done = leaves.filter((t) => t.status === "done").length;
+        return `${projectRequirements().length} 个需求 · ${tasks.length} 个任务 · ${done}/${leaves.length} 个叶子完成`;
       }
       case "activity":
         return `最近 ${projectEntries().length} 条更新`;
@@ -851,6 +934,8 @@
     const due = t.due_date ? dueInfo(t.due_date) : null;
     const blocker = t.status !== "done" && t.last_kind === "blocker";
     const prio = t.priority !== "P2" ? `<span class="prio prio-${t.priority.toLowerCase()}">${t.priority}</span>` : "";
+    const kids = childrenOf(t.id);
+    const roll = kids.length ? taskRollup(t) : null;
     return `<article class="card ${t.priority === "P0" ? "p0" : t.priority === "P1" ? "p1" : ""}" data-task="${t.id}" draggable="${dragEnabled}">
       <div class="card-top">
         <h4 class="card-title">${esc(t.title)}</h4>
@@ -863,6 +948,7 @@
         ${prio}
         ${due ? `<span class="card-due ${due.cls}"><svg class="icon"><use href="#i-clock"/></svg>${due.text}</span>` : ""}
         ${blocker ? `<span class="card-note" style="color:var(--danger)"><svg class="icon"><use href="#i-alert"/></svg>阻塞</span>` : ""}
+        ${roll ? `<span class="card-note" title="子任务完成度"><svg class="icon"><use href="#i-wbs"/></svg>${roll.done}/${roll.total}</span>` : ""}
         ${t.entry_count ? `<span class="card-note"><svg class="icon"><use href="#i-comment"/></svg>${t.entry_count}</span>` : ""}
         <span class="spacer"></span>
         ${owner ? avatar(owner, "sm") : ""}
@@ -870,11 +956,167 @@
     </article>`;
   }
 
-  // ---------------------------------------------------------------- 甘特图
+  // ---------------------------------------------------------------- 工作分解（WBS）
+
+  function wbsAddActive(parentId, requirementId) {
+    const add = state.wbsAdd;
+    if (!add) return false;
+    return add.parentId === parentId && add.requirementId === requirementId;
+  }
+
+  function wbsAddRowHTML(depth, parentId, requirementId) {
+    return `<div class="wbs-new" style="--depth:${depth}">
+      <span class="wbs-no"></span>
+      <span class="wbs-new-dot"></span>
+      <input type="text" data-wbs-input maxlength="120" placeholder="${parentId ? "输入子任务标题，回车创建" : "输入任务标题，回车创建"}" aria-label="新任务标题">
+      <span class="wbs-new-hint">回车创建 · Esc 取消</span>
+      <button type="button" class="link-btn" data-wbs-cancel>取消</button>
+    </div>`;
+  }
+
+  function wbsToggleHTML(key, hasChildren) {
+    const collapsed = state.wbsCollapsed.has(key);
+    return `<button type="button" class="wbs-toggle ${hasChildren ? "" : "empty"} ${collapsed ? "collapsed" : ""}" ` +
+      `${hasChildren ? `data-wbs-toggle="${key}"` : "tabindex=\"-1\" aria-hidden=\"true\""} ` +
+      `aria-label="${collapsed ? "展开" : "收起"}"><svg class="icon"><use href="#i-chevron"/></svg></button>`;
+  }
+
+  function wbsReqRowHTML(r, no) {
+    const kids = rootTasksOf(r.id);
+    const roll = reqProgress(r.id);
+    const owner = member(r.owner_id);
+    const key = `req:${r.id}`;
+    const collapsed = state.wbsCollapsed.has(key);
+    return `<div class="wbs-req" data-req="${r.id}" style="--depth:0">
+      ${wbsToggleHTML(key, kids.length)}
+      <span class="wbs-no">${no}</span>
+      <span class="dot status-${r.status}"></span>
+      <span class="wbs-name" title="${esc(r.title)}">${esc(r.title)}</span>
+      <span class="wbs-roll">${roll.total
+        ? `<span class="wbs-bar"><i style="width:${roll.pct}%"></i></span><span>${roll.done}/${roll.total}</span>`
+        : `<span class="wbs-empty-roll">未拆解</span>`}</span>
+      <span class="wbs-owner">${owner ? avatar(owner, "sm") : ""}</span>
+      <span class="wbs-dates">${r.target_date ? `目标 ${shortDate(r.target_date)}` : ""}</span>
+      <button type="button" class="wbs-add" data-wbs-add="req:${r.id}" data-parent="" data-req="${r.id}" title="在这个需求下加任务" aria-label="在这个需求下加任务"><svg class="icon"><use href="#i-plus"/></svg></button>
+    </div>${collapsed ? "" : wbsAddActive(null, r.id) ? wbsAddRowHTML(1, null, r.id) : ""}`;
+  }
+
+  function wbsTaskRowHTML(t, no, depth) {
+    const kids = childrenOf(t.id);
+    const roll = taskRollup(t);
+    const owner = member(t.assignee_id);
+    const key = `task:${t.id}`;
+    const dates = t.start_date || t.due_date
+      ? `${t.start_date ? shortDate(t.start_date) : "…"} – ${t.due_date ? shortDate(t.due_date) : "…"}`
+      : "";
+    return `<div class="wbs-row ${kids.length ? "has-kids" : ""}" data-task="${t.id}" style="--depth:${depth}">
+      ${wbsToggleHTML(key, kids.length)}
+      <span class="wbs-no">${no}</span>
+      <span class="dot status-${t.status}"></span>
+      <span class="wbs-name" title="${esc(t.title)}">${esc(t.title)}</span>
+      <span class="wbs-roll">${kids.length
+        ? `<span class="wbs-bar"><i style="width:${roll.pct}%"></i></span><span>${roll.done}/${roll.total}</span>`
+        : `<span class="wbs-state status-${t.status}">${TASK_LABEL[t.status]}</span>`}</span>
+      <span class="wbs-owner">${owner ? avatar(owner, "sm") : ""}</span>
+      <span class="wbs-dates">${dates}</span>
+      <button type="button" class="wbs-add" data-wbs-add="task:${t.id}" data-parent="${t.id}" data-req="${t.requirement_id || ""}" title="加子任务" aria-label="加子任务"><svg class="icon"><use href="#i-plus"/></svg></button>
+    </div>`;
+  }
+
+  function wbsTaskTreeHTML(t, no, depth, out) {
+    out.push(wbsTaskRowHTML(t, no, depth));
+    if (state.wbsCollapsed.has(`task:${t.id}`)) {
+      if (wbsAddActive(t.id, t.requirement_id || null)) {
+        out.push(wbsAddRowHTML(depth + 1, t.id, t.requirement_id || null));
+      }
+      return;
+    }
+    if (wbsAddActive(t.id, t.requirement_id || null)) {
+      out.push(wbsAddRowHTML(depth + 1, t.id, t.requirement_id || null));
+    }
+    childrenOf(t.id).forEach((child, index) => {
+      wbsTaskTreeHTML(child, `${no}.${index + 1}`, depth + 1, out);
+    });
+  }
+
+  function renderWbs() {
+    const p = currentProject();
+    if (!p) return projectOnboardingHTML();
+
+    const reqs = projectRequirements();
+    const tasks = projectTasks();
+    const stuckUnlinked = tasks.filter((t) => !t.requirement_id && !t.parent_id);
+    const leaves = tasks.filter((t) => !childrenOf(t.id).length);
+    const doneLeaves = leaves.filter((t) => t.status === "done").length;
+
+    if (!reqs.length && !tasks.length) {
+      return `<div class="empty-note" style="margin-top:12vh">
+        <strong>这个项目还没有可拆解的内容。</strong>先写一个需求，再往下拆任务；也可以直接建任务。
+        <div style="margin-top:14px;display:flex;gap:8px;justify-content:center">
+          <button type="button" class="btn btn-primary" data-action="new-req">新建需求</button>
+          <button type="button" class="btn btn-ghost" data-action="new-task">直接建任务</button>
+        </div>
+      </div>`;
+    }
+
+    const out = [];
+    reqs.forEach((r, index) => {
+      out.push(wbsReqRowHTML(r, String(index + 1)));
+      if (state.wbsCollapsed.has(`req:${r.id}`)) return;
+      const roots = rootTasksOf(r.id);
+      roots.forEach((t, childIndex) => {
+        wbsTaskTreeHTML(t, `${index + 1}.${childIndex + 1}`, 1, out);
+      });
+      if (!roots.length && !wbsAddActive(null, r.id)) {
+        out.push(`<div class="wbs-hint-row" style="--depth:1">这个需求还没拆任务，点右上角 + 添加第一个。</div>`);
+      }
+    });
+
+    if (stuckUnlinked.length || (state.wbsAdd && state.wbsAdd.requirementId === null)) {
+      out.push(`<div class="wbs-req unlinked" style="--depth:0">
+        <span class="wbs-toggle empty" aria-hidden="true"></span>
+        <span class="wbs-no">—</span>
+        <span class="dot" style="visibility:hidden"></span>
+        <span class="wbs-name">未归入需求</span>
+        <span class="wbs-roll">${stuckUnlinked.length} 个任务</span>
+        <span class="wbs-owner"></span>
+        <span class="wbs-dates"></span>
+        <button type="button" class="wbs-add" data-wbs-add="unlinked" data-parent="" data-req="" title="加一个不关联需求的任务" aria-label="加一个不关联需求的任务"><svg class="icon"><use href="#i-plus"/></svg></button>
+      </div>`);
+      if (!state.wbsCollapsed.has("unlinked")) {
+        if (wbsAddActive(null, null)) out.push(wbsAddRowHTML(1, null, null));
+        stuckUnlinked.forEach((t, index) => {
+          wbsTaskTreeHTML(t, `U.${index + 1}`, 1, out);
+        });
+      }
+    }
+
+    return `<div class="wbs-toolbar">
+      <div class="wbs-summary">
+        <strong>${reqs.length}</strong> 个需求 · <strong>${tasks.length}</strong> 个任务
+        <span class="wbs-summary-done">${doneLeaves}/${leaves.length} 个叶子完成</span>
+      </div>
+      <div class="side">
+        <button type="button" class="filter-chip" data-wbs-expand="all">展开全部</button>
+        <button type="button" class="filter-chip" data-wbs-expand="none">只看需求</button>
+        <button type="button" class="btn btn-ghost" data-action="new-task"><svg class="icon"><use href="#i-plus"/></svg>顶层任务</button>
+      </div>
+    </div>
+    <div class="wbs-panel">${out.join("")}</div>
+    <p class="wbs-foot">点行打开详情；子任务跟随上级需求。排序在「看板」，排期在「甘特」。</p>`;
+  }
 
   function taskSpan(t) {
-    const start = parseDay(t.start_date);
-    const end = parseDay(t.due_date);
+    let start = parseDay(t.start_date);
+    let end = parseDay(t.due_date);
+    if (!start && !end) {
+      for (const child of childrenOf(t.id)) {
+        const span = taskSpan(child);
+        if (!span) continue;
+        if (!start || span.start < start) start = span.start;
+        if (!end || span.end > end) end = span.end;
+      }
+    }
     if (!start && !end) return null;
     const s = start || end;
     const e = end || start;
@@ -1008,9 +1250,13 @@
       .map((r) => {
         const span = reqSpan(r);
         const { done, total, pct } = reqProgress(r.id);
-        const list = reqTasks(r.id)
-          .filter((t) => taskSpan(t) && (!q || matchesTask(t)))
-          .sort((a, b) => taskSpan(a).start - taskSpan(b).start || a.id - b.id);
+        const ordered = [];
+        const walk = (t, depth) => {
+          ordered.push({ task: t, depth });
+          childrenOf(t.id).forEach((child) => walk(child, depth + 1));
+        };
+        rootTasksOf(r.id).forEach((t) => walk(t, 0));
+        const list = ordered.filter(({ task: t }) => taskSpan(t) && (!q || matchesTask(t)));
         const bar = span
           ? ganttBar(
               span,
@@ -1021,13 +1267,15 @@
             ).replace("></i>", `><i style="width:${pct}%"></i></i>`)
           : `<span class="g-unscheduled-chip" style="left:4px">未排期</span>`;
         const rows = list
-          .map((t) => {
+          .map(({ task: t, depth }) => {
             const ts = taskSpan(t);
             const owner = member(t.assignee_id);
+            const roll = childrenOf(t.id).length ? taskRollup(t) : null;
             return `<div class="g-row" data-task="${t.id}">
-              <div class="g-label g-task-label">
+              <div class="g-label g-task-label" style="padding-left:${10 + depth * 12}px">
                 <span class="dot status-${t.status}"></span>
                 <span class="g-name" title="${esc(t.title)}">${esc(t.title)}</span>
+                ${roll ? `<span class="g-subcount">${roll.done}/${roll.total}</span>` : ""}
                 ${owner ? avatar(owner, "sm") : ""}
               </div>
               <div class="g-track" style="width:${trackW}px;--week:${7 * dayW}px">
@@ -1058,20 +1306,31 @@
       .join("");
 
     const unlinked = scheduled.filter((t) => !t.requirement_id || !requirement(t.requirement_id));
+    const unlinkedOrdered = [];
+    const unlinkedSeen = new Set();
+    const walkUnlinked = (t, depth) => {
+      if (unlinkedSeen.has(t.id)) return;
+      unlinkedSeen.add(t.id);
+      unlinkedOrdered.push({ task: t, depth });
+      childrenOf(t.id).forEach((child) => walkUnlinked(child, depth + 1));
+    };
+    unlinked.filter((t) => !t.parent_id).forEach((t) => walkUnlinked(t, 0));
+    unlinked.forEach((t) => walkUnlinked(t, 0));
     const unlinkedHTML = unlinked.length
       ? `<div class="g-row g-group">
           <div class="g-label g-group-label"><span class="g-name">未关联需求</span><span class="g-progress">${unlinked.length}</span></div>
           <div class="g-track" style="width:${trackW}px;--week:${7 * dayW}px">${todayLine}</div>
         </div>
-        ${unlinked
-          .sort((a, b) => taskSpan(a).start - taskSpan(b).start)
-          .map((t) => {
+        ${unlinkedOrdered
+          .map(({ task: t, depth }) => {
             const ts = taskSpan(t);
             const owner = member(t.assignee_id);
+            const roll = childrenOf(t.id).length ? taskRollup(t) : null;
             return `<div class="g-row" data-task="${t.id}">
-              <div class="g-label g-task-label">
+              <div class="g-label g-task-label" style="padding-left:${10 + depth * 12}px">
                 <span class="dot status-${t.status}"></span>
                 <span class="g-name">${esc(t.title)}</span>
+                ${roll ? `<span class="g-subcount">${roll.done}/${roll.total}</span>` : ""}
                 ${owner ? avatar(owner, "sm") : ""}
               </div>
               <div class="g-track" style="width:${trackW}px;--week:${7 * dayW}px">
@@ -1387,9 +1646,24 @@
       .join("");
   }
 
+  function parentTaskOptions(t) {
+    const blocked = new Set([t.id, ...descendantIds(t.id)]);
+    return projectTasks()
+      .filter((candidate) => !blocked.has(candidate.id))
+      .sort((a, b) => a.id - b.id)
+      .map((candidate) => {
+        const prefix = "　".repeat(taskDepth(candidate));
+        return `<option value="${candidate.id}" ${candidate.id === t.parent_id ? "selected" : ""}>${prefix}${esc(candidate.title)}</option>`;
+      })
+      .join("");
+  }
+
   function taskDrawerHTML(t, readyClass) {
     const req = requirement(t.requirement_id);
     const owner = member(t.assignee_id);
+    const parent = t.parent_id ? task(t.parent_id) : null;
+    const kids = childrenOf(t.id);
+    const roll = taskRollup(t);
     return `<div class="drawer-backdrop${readyClass}" data-action="close-drawer"></div>
       <aside class="drawer${readyClass}" role="dialog" aria-modal="true" aria-label="任务详情">
         <div class="drawer-head">
@@ -1400,6 +1674,7 @@
           <button type="button" class="icon-btn" data-action="close-drawer" aria-label="关闭"><svg class="icon"><use href="#i-close"/></svg></button>
         </div>
         <div class="drawer-body">
+          ${parent ? `<button type="button" class="drawer-parent" data-task="${parent.id}"><svg class="icon"><use href="#i-wbs"/></svg><span>${esc(parent.title)}</span></button>` : ""}
           <textarea class="drawer-title" data-field="title" rows="1" maxlength="120" placeholder="任务标题">${esc(t.title)}</textarea>
           <div class="drawer-tags">
             <span class="pill status-${t.status}"><span class="dot" style="background:currentColor"></span>${TASK_LABEL[t.status]}</span>
@@ -1426,16 +1701,44 @@
             <div class="field"><label>截止日期</label>
               <input type="date" data-field="due_date" value="${t.due_date || ""}">
             </div>
-            <div class="field full"><label>所属需求</label>
-              <select data-field="requirement_id">
+            <div class="field full"><label>上级任务</label>
+              <select data-field="parent_id">
+                <option value="">无（顶层任务）</option>
+                ${parentTaskOptions(t)}
+              </select>
+            </div>
+            <div class="field full"><label>所属需求${t.parent_id ? "（跟随上级）" : ""}</label>
+              <select data-field="requirement_id" ${t.parent_id ? "disabled" : ""}>
                 <option value="">不关联需求</option>
                 ${requirementOptions(t.requirement_id)}
               </select>
+              ${t.parent_id ? `<p class="field-hint">子任务的需求由上级任务决定，在上级任务里调整。</p>` : ""}
             </div>
           </div>
 
           <div class="drawer-desc-label"><span>说明</span><span>失焦自动保存</span></div>
           <textarea class="drawer-desc" data-field="description" maxlength="4000" placeholder="补充背景、验收标准，或者一个链接…">${esc(t.description)}</textarea>
+
+          <div class="drawer-section">
+            <div class="drawer-section-head">
+              <h3>子任务</h3>
+              <span class="count">${kids.length ? `${roll.done}/${roll.total} 个叶子完成` : ""}</span>
+            </div>
+            ${kids.length
+              ? `<div class="subtask-list">${kids
+                  .map(
+                    (kid) => `<div class="subtask-row" data-task="${kid.id}">
+                      <span class="dot status-${kid.status}"></span>
+                      <span class="subtask-title">${esc(kid.title)}</span>
+                      <span class="subtask-state">${TASK_LABEL[kid.status]}</span>
+                    </div>`
+                  )
+                  .join("")}</div>`
+              : `<p class="subtask-empty">还没有子任务。把它拆成能独立认领的小块。</p>`}
+            <div class="linked-add">
+              <input type="text" data-subtask-input maxlength="120" placeholder="输入子任务标题，回车创建">
+            </div>
+          </div>
 
           <div class="drawer-section">
             <div class="drawer-section-head">
@@ -1879,12 +2182,15 @@
 
   function confirmDelete(kind, id, title) {
     const label = kind === "task" ? "任务" : kind === "requirement" ? "需求" : "项目";
+    const subtaskCount = kind === "task" ? descendantCount(id) : 0;
     const note =
       kind === "requirement"
         ? "下的任务会保留，但不再关联这个需求。"
         : kind === "project"
           ? "只有在项目里没有需求和任务时才能删除。"
-          : "的记录也会一起删除。";
+          : subtaskCount
+            ? `下的 ${subtaskCount} 个子任务也会一起删除。`
+            : "的记录也会一起删除。";
     state.confirmAction = async () => {
       closeModal();
       try {
@@ -2262,6 +2568,50 @@
     window.scrollTo({ top: 0 });
   }
 
+  async function createWbsTask(rawTitle) {
+    const title = String(rawTitle || "").trim();
+    const add = state.wbsAdd;
+    if (!title || !add) return;
+    if (!requireIdentity()) return;
+    state.wbsAdd = add;
+    try {
+      const parent = add.parentId ? task(add.parentId) : null;
+      const data = await api("/api/tasks", {
+        method: "POST",
+        body: {
+          title,
+          status: "todo",
+          assignee_id: state.identity,
+          project_id: parent ? parent.project_id : state.currentProjectId,
+          requirement_id: parent ? parent.requirement_id : add.requirementId,
+          parent_id: add.parentId,
+          actor_id: state.identity,
+        },
+      });
+      applyState(data);
+      render();
+      toast(add.parentId ? "已添加子任务" : "已添加任务");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  async function onViewKeyDown(event) {
+    const input = event.target.closest("[data-wbs-input]");
+    if (!input) return;
+    if (event.isComposing || event.keyCode === 229) return;
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      state.wbsAdd = null;
+      render();
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      await createWbsTask(input.value);
+    }
+  }
+
   function onViewClick(event) {
     const menuBtn = event.target.closest("[data-menu]");
     if (menuBtn) {
@@ -2299,6 +2649,48 @@
     const zoomBtn = event.target.closest("[data-zoom]");
     if (zoomBtn) {
       state.ganttZoom = zoomBtn.dataset.zoom;
+      render();
+      return;
+    }
+
+    const wbsToggle = event.target.closest("[data-wbs-toggle]");
+    if (wbsToggle) {
+      event.stopPropagation();
+      const key = wbsToggle.dataset.wbsToggle;
+      if (state.wbsCollapsed.has(key)) state.wbsCollapsed.delete(key);
+      else state.wbsCollapsed.add(key);
+      render();
+      return;
+    }
+
+    const wbsExpand = event.target.closest("[data-wbs-expand]");
+    if (wbsExpand) {
+      if (wbsExpand.dataset.wbsExpand === "none") {
+        state.wbsCollapsed = new Set([...projectRequirements().map((r) => `req:${r.id}`), "unlinked"]);
+      } else {
+        state.wbsCollapsed.clear();
+      }
+      state.wbsAdd = null;
+      render();
+      return;
+    }
+
+    const wbsAdd = event.target.closest("[data-wbs-add]");
+    if (wbsAdd) {
+      event.stopPropagation();
+      if (!requireIdentity()) return;
+      const parentId = wbsAdd.dataset.parent ? Number(wbsAdd.dataset.parent) : null;
+      const requirementId = wbsAdd.dataset.req ? Number(wbsAdd.dataset.req) : null;
+      if (parentId) state.wbsCollapsed.delete(`task:${parentId}`);
+      if (requirementId) state.wbsCollapsed.delete(`req:${requirementId}`);
+      else if (!parentId) state.wbsCollapsed.delete("unlinked");
+      state.wbsAdd = { parentId, requirementId };
+      render();
+      return;
+    }
+
+    if (event.target.closest("[data-wbs-cancel]")) {
+      state.wbsAdd = null;
       render();
       return;
     }
@@ -2485,6 +2877,31 @@
     }
   }
 
+  async function createSubtask(parentId, title) {
+    const parent = task(parentId);
+    if (!parent) return;
+    if (!requireIdentity()) return;
+    try {
+      const data = await api("/api/tasks", {
+        method: "POST",
+        body: {
+          title,
+          status: "todo",
+          assignee_id: state.identity,
+          project_id: parent.project_id,
+          requirement_id: parent.requirement_id,
+          parent_id: parent.id,
+          actor_id: state.identity,
+        },
+      });
+      applyState(data);
+      render();
+      toast("已添加子任务");
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
   function onDrawerKeyDown(event) {
     if (event.target.matches(".drawer-title") && event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -2506,6 +2923,15 @@
       if (value) {
         event.target.value = "";
         createLinkedTask(value);
+      }
+      return;
+    }
+    if (event.target.matches("[data-subtask-input]") && event.key === "Enter") {
+      event.preventDefault();
+      const value = event.target.value.trim();
+      if (value && state.drawer) {
+        event.target.value = "";
+        createSubtask(state.drawer.id, value);
       }
     }
   }
@@ -2545,6 +2971,7 @@
 
   function bindEvents() {
     viewEl.addEventListener("click", onViewClick);
+    viewEl.addEventListener("keydown", onViewKeyDown);
     viewEl.addEventListener("dragstart", onViewDragStart);
     viewEl.addEventListener("dragover", onViewDragOver);
     viewEl.addEventListener("drop", onViewDrop);

@@ -1731,6 +1731,185 @@ html[data-theme="dark"] .filter-chip.active { color: #151610; }
 
 .noscript { padding: 30px; }
 
+/* ---------------------------------------------------------------- 工作分解（WBS） */
+
+.wbs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 2px 0 12px;
+}
+.wbs-summary { font-size: 12px; color: var(--muted); }
+.wbs-summary strong { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.wbs-summary-done { margin-left: 10px; color: var(--faint); font-size: 11px; }
+.wbs-toolbar .side { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+
+.wbs-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.wbs-req,
+.wbs-row {
+  display: grid;
+  grid-template-columns: 22px 46px 12px minmax(0, 1fr) 122px 30px 118px 26px;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 12px 6px calc(10px + var(--depth, 0) * 18px);
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+}
+.wbs-panel > .wbs-req:first-child,
+.wbs-panel > .wbs-row:first-child { border-top: 0; }
+.wbs-req { background: var(--surface); }
+.wbs-req:hover,
+.wbs-row:hover { background: var(--surface-2); }
+.wbs-req.unlinked { cursor: default; color: var(--muted); }
+.wbs-row.has-kids .wbs-name { font-weight: 600; }
+
+.wbs-toggle {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.wbs-toggle .icon { width: 13px; height: 13px; transition: transform 0.15s ease; }
+.wbs-toggle:not(.collapsed) .icon { transform: rotate(90deg); }
+.wbs-toggle:hover { background: var(--line); color: var(--ink); }
+.wbs-toggle.empty { opacity: 0; pointer-events: none; }
+
+.wbs-no {
+  font-size: 10px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wbs-name { font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wbs-roll {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.wbs-bar { width: 58px; height: 4px; border-radius: 99px; background: var(--track); overflow: hidden; flex: none; }
+.wbs-bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); }
+.wbs-state { font-size: 9.5px; padding: 1px 7px; border-radius: 99px; white-space: nowrap; }
+.wbs-empty-roll { color: var(--faint); font-size: 10px; }
+.wbs-owner { display: flex; justify-content: flex-end; }
+.wbs-dates { font-size: 10px; color: var(--faint); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wbs-add {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  padding: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--faint);
+  cursor: pointer;
+  opacity: 0;
+}
+.wbs-add .icon { width: 14px; height: 14px; }
+.wbs-req .wbs-add { opacity: 1; }
+.wbs-row:hover .wbs-add,
+.wbs-add:focus-visible { opacity: 1; }
+.wbs-add:hover { background: var(--line); color: var(--ink); }
+
+.wbs-hint-row {
+  padding: 8px 12px 8px calc(10px + var(--depth, 0) * 18px + 30px);
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--faint);
+  background: var(--panel);
+}
+
+.wbs-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px 7px calc(10px + var(--depth, 0) * 18px + 30px);
+  border-top: 1px dashed var(--line);
+  background: var(--surface);
+}
+.wbs-new-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+.wbs-new input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0 9px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.wbs-new-hint { font-size: 10px; color: var(--faint); white-space: nowrap; }
+.wbs-foot { margin: 12px 4px 0; font-size: 10px; color: var(--faint); }
+
+/* 任务抽屉：上级任务与子任务 */
+.drawer-parent {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  margin-bottom: 7px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.drawer-parent .icon { width: 13px; height: 13px; flex: none; }
+.drawer-parent span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-parent:hover { color: var(--ink); }
+
+.subtask-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+  margin-bottom: 7px;
+}
+.subtask-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  cursor: pointer;
+}
+.subtask-row:first-child { border-top: 0; }
+.subtask-row:hover { background: var(--surface); }
+.subtask-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subtask-state { font-size: 10px; color: var(--faint); white-space: nowrap; }
+.subtask-empty { margin: 0 0 8px; font-size: 11px; color: var(--faint); line-height: 1.6; }
+.field-hint { margin: 4px 0 0; font-size: 10px; color: var(--faint); }
+
+.g-subcount { font-size: 9px; color: var(--faint); font-variant-numeric: tabular-nums; flex: none; }
+
 /* ---------------------------------------------------------------- 响应式 */
 
 @media (max-width: 1180px) {
@@ -1803,6 +1982,19 @@ html[data-theme="dark"] .filter-chip.active { color: #151610; }
   .board-head .hint { display: none; }
 
   .project-btn { max-width: 128px; }
+  .wbs-toolbar .side { margin-left: 0; }
+  .wbs-req,
+  .wbs-row {
+    grid-template-columns: 20px 34px 10px minmax(0, 1fr) 78px 24px;
+    gap: 6px;
+    padding-left: calc(8px + var(--depth, 0) * 12px);
+  }
+  .wbs-owner,
+  .wbs-dates { display: none; }
+  .wbs-roll .wbs-bar { width: 38px; }
+  .wbs-add { opacity: 1; }
+  .wbs-new { padding-left: calc(8px + var(--depth, 0) * 12px + 26px); flex-wrap: wrap; }
+  .wbs-new-hint { display: none; }
   .gantt-top { align-items: flex-start; }
   .gantt-title h2 { font-size: 16px; }
   .gantt-actions { margin-left: 0; width: 100%; justify-content: space-between; }
@@ -1843,6 +2035,9 @@ html[data-theme="dark"] .filter-chip.active { color: #151610; }
   .gantt-title p { font-size: 10.5px; }
   .gantt-foot { display: none; }
   .stat strong { font-size: 23px; }
+  .wbs-summary-done { display: none; }
+  .wbs-req,
+  .wbs-row { grid-template-columns: 20px 26px 10px minmax(0, 1fr) 62px 24px; }
   .composer-hint { display: none; }
   .drawer-title { font-size: 17px; }
 }
